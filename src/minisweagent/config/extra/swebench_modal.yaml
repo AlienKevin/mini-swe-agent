@@ -242,7 +242,7 @@ agent:
     </output_tail>
     {%- endif %}
     Please try another command and make sure to avoid those requiring interactive input.
-  step_limit: 70
+  step_limit: 100
   cost_limit: 0.3
 
 # Modal environment configuration via SWE-ReX
@@ -268,12 +268,11 @@ environment:
     # cpu: 2.0
     # memory: 4096
 
-# GPT-5 mini via Portkey
 model:
-  model_name: "gpt-5-mini"
+  model_name: "fireworks/qwen3-coder-480b-a35b-instruct"
   model_class: portkey
-  provider: "@openai"
+  provider: "@fireworks"
+  litellm_model_name_override: "fireworks_ai/qwen3-coder-480b-a35b-instruct"
   model_kwargs:
     drop_params: true
-    # GPT-5 mini only supports temperature=1.0
-    # temperature: 0.0
+    temperature: 0.0
