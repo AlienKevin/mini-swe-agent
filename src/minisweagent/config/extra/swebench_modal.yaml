@@ -269,10 +269,10 @@ environment:
     # memory: 4096
 
 model:
-  model_name: "fireworks/qwen3-coder-480b-a35b-instruct"
+  model_name: "fireworks/deepseek-v3p2"
   model_class: portkey
   provider: "@fireworks"
-  litellm_model_name_override: "fireworks_ai/qwen3-coder-480b-a35b-instruct"
+  litellm_model_name_override: "fireworks_ai/accounts/fireworks/models/deepseek-v3p2"
   model_kwargs:
     drop_params: true
     temperature: 0.0
