@@ -1,0 +1,35 @@
+# GLM-4.6 + Modal environment configuration for SWE-bench runs
+#
+# Usage:
+#   mini-extra swebench -c swebench -c swebench_glm46_modal [other options]
+#
+# Requirements:
+#   1. Run `modal setup` to authenticate with Modal
+#   2. Install the modal extra: `pip install mini-swe-agent[modal]`
+#   3. Set DEEPINFRA_API_KEY environment variable
+
+# Modal environment configuration via SWE-ReX
+environment:
+  environment_class: swerex_modal
+  cwd: "/testbed"
+  timeout: 60
+  interpreter: ["bash", "-c"]
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PIP_PROGRESS_BAR: 'off'
+    TQDM_DISABLE: '1'
+  startup_timeout: 600.0
+  runtime_timeout: 1800.0
+  deployment_timeout: 1800.0
+  install_pipx: true
+  modal_sandbox_kwargs: {}
+
+# GLM-4.6 via DeepInfra (OpenAI-compatible)
+model:
+  model_name: "deepinfra/zai-org/GLM-4.6"
+  model_kwargs:
+    drop_params: true
+    temperature: 0.0
+  cost_tracking: "ignore_errors"
