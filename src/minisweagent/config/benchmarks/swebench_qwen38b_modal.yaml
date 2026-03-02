@@ -1,15 +1,16 @@
 # Qwen3-8B (SWE-smith-rs fine-tune) + Modal environment config
 #
 # Usage:
-#   1. Deploy vLLM on Modal: modal deploy scripts/serve_vllm_modal.py
-#   2. Set the endpoint URL:
-#      export VLLM_API_BASE="https://<your-modal-endpoint>"
-#   3. Run:
-#      mini-extra swebench -c swebench -c swebench_qwen38b_modal \
+#   1. Start the model server (vLLM or SGLang) on Modal
+#   2. Update api_base below with the server endpoint URL
+#   3. Run eval on the Rust subset of SWE-bench Multilingual:
+#
+#      uv run mini-extra swebench \
+#        -c swebench -c swebench_qwen38b_modal \
 #        --subset multilingual --split test \
-#        -i <instance_ids> \
-#        -o results/qwen38b-multilingual-rust \
-#        -w 20
+#        --filter "^(tokio-rs__|sharkdp__bat|burntsushi__ripgrep|nushell__nushell|uutils__coreutils|astral-sh__ruff)" \
+#        -o results/<model-name>-multilingual-rust \
+#        -w 43
 
 # Modal environment configuration via SWE-ReX
 environment:
