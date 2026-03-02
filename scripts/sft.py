@@ -175,21 +175,18 @@ from trl import SFTConfig, SFTTrainer
 
 
 class EpochCheckpointCallback(TrainerCallback):
-    # Save a named checkpoint (epoch-1, epoch0, epoch1, ...) and commit the volume.
-    # epoch-1 = base model before any training.
+    # Save a named checkpoint (epoch0, epoch1, ...) and commit the volume.
+    # Uses trainer.save_model() to go through the proper FSDP save path
+    # (accelerator.get_state_dict), matching the format of the final save.
+
+    def __init__(self):
+        self.trainer = None
 
     def on_epoch_end(self, args, state, control, **kwargs):
         epoch_idx = int(state.epoch) - 1
-        self._save_checkpoint(args, state, kwargs, epoch_idx)
-
-    def _save_checkpoint(self, args, state, kwargs, epoch_idx):
-        output_dir = args.output_dir
-        epoch_dir = os.path.join(output_dir, f"epoch{epoch_idx}")
-        # All ranks must participate in save_pretrained (FSDP all-gather)
-        kwargs["model"].save_pretrained(epoch_dir)
+        epoch_dir = os.path.join(args.output_dir, f"epoch{epoch_idx}")
+        self.trainer.save_model(epoch_dir)
         if state.is_world_process_zero:
-            tokenizer = kwargs.get("tokenizer") or kwargs.get("processing_class")
-            tokenizer.save_pretrained(epoch_dir)
             import modal
             modal.Volume.from_name("sft-models").commit()
             print(f"Saved checkpoint to {epoch_dir}")
@@ -230,7 +227,7 @@ def main():
         per_device_train_batch_size=2,
         per_device_eval_batch_size=8,
         gradient_accumulation_steps=1,  # 8 GPUs x 2 x 1 = effective batch size 16
-        num_train_epochs=7.0,
+        num_train_epochs=3.0,
         seed=42,
         lr_scheduler_type="cosine",
         warmup_ratio=0.1,
@@ -252,13 +249,15 @@ def main():
         },
     )
 
+    epoch_cb = EpochCheckpointCallback()
     trainer = SFTTrainer(
         model=model_id,
         args=training_args,
         train_dataset=dataset,
         processing_class=tokenizer,
-        callbacks=[EpochCheckpointCallback()],
+        callbacks=[epoch_cb],
     )
+    epoch_cb.trainer = trainer
 
     trainer.train()
     trainer.save_model(output_exp_dir)
