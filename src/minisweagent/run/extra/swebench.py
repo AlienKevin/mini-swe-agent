@@ -81,7 +81,7 @@ def get_sb_environment(config: dict, instance: dict) -> Environment:
     env_config = config.setdefault("environment", {})
     env_config["environment_class"] = env_config.get("environment_class", "docker")
     image_name = get_swebench_docker_image_name(instance)
-    if env_config["environment_class"] == "docker":
+    if env_config["environment_class"] in ["docker", "swerex_modal"]:
         env_config["image"] = image_name
     elif env_config["environment_class"] == "singularity":
         env_config["image"] = "docker://" + image_name
@@ -119,6 +119,59 @@ def remove_from_preds_file(output_path: Path, instance_id: str):
             output_path.write_text(json.dumps(output_data, indent=2))
 
 
+def _get_language_from_instance_id(instance_id: str) -> str:
+    """Extract repo from instance_id (e.g., 'tokio-rs__axum-1730' -> 'tokio-rs/axum')."""
+    parts = instance_id.rsplit("-", 1)
+    if parts:
+        return parts[0].replace("__", "/")
+    return "unknown"
+
+
+def _extract_instance_metrics(
+    agent: DefaultAgent | None,
+    instance_id: str,
+    env_setup_time: float,
+    instance_start: float,
+) -> dict:
+    """Extract per-instance metrics from a completed agent run."""
+    metrics: dict = {
+        "instance_duration_s": time.time() - instance_start,
+        "env_setup_time_s": env_setup_time,
+        "repo": _get_language_from_instance_id(instance_id),
+    }
+    if agent is None:
+        return metrics
+
+    metrics["cost"] = agent.model.cost
+    metrics["steps"] = agent.model.n_calls
+
+    total_input_tokens = 0
+    total_output_tokens = 0
+    tps_values = []
+
+    for msg in agent.messages:
+        extra = msg.get("extra", {})
+        response = extra.get("response", {})
+        usage = response.get("usage", {})
+
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_input_tokens += prompt_tokens
+        total_output_tokens += completion_tokens
+
+        response_ms = response.get("_response_ms")
+        if response_ms and completion_tokens > 0:
+            tps_values.append(completion_tokens / (response_ms / 1000))
+
+    metrics["input_tokens"] = total_input_tokens
+    metrics["output_tokens"] = total_output_tokens
+    metrics["total_tokens"] = total_input_tokens + total_output_tokens
+    if tps_values:
+        metrics["avg_output_tps"] = sum(tps_values) / len(tps_values)
+
+    return metrics
+
+
 def process_instance(
     instance: dict,
     output_dir: Path,
@@ -135,13 +188,16 @@ def process_instance(
     task = instance["problem_statement"]
 
     progress_manager.on_instance_start(instance_id)
-    progress_manager.update_instance_status(instance_id, "Pulling/starting docker")
+    progress_manager.update_instance_status(instance_id, "Pulling/starting environment")
 
     agent = None
     extra_info = None
+    instance_start = time.time()
+    env_setup_time = 0.0
 
     try:
         env = get_sb_environment(config, instance)
+        env_setup_time = time.time() - instance_start
         agent = ProgressTrackingAgent(
             model,
             env,
@@ -154,7 +210,10 @@ def process_instance(
         logger.error(f"Error processing instance {instance_id}: {e}", exc_info=True)
         exit_status, result = type(e).__name__, str(e)
         extra_info = {"traceback": traceback.format_exc()}
+        if env_setup_time == 0.0:
+            env_setup_time = time.time() - instance_start
     finally:
+        instance_metrics = _extract_instance_metrics(agent, instance_id, env_setup_time, instance_start)
         save_traj(
             agent,
             instance_dir / f"{instance_id}.traj.json",
@@ -165,7 +224,7 @@ def process_instance(
             print_fct=logger.info,
         )
         update_preds_file(output_dir / "preds.json", instance_id, model.config.model_name, result)
-        progress_manager.on_instance_end(instance_id, exit_status)
+        progress_manager.on_instance_end(instance_id, exit_status, instance_metrics)
 
 
 def filter_instances(
@@ -203,6 +262,7 @@ def main(
     redo_existing: bool = typer.Option(False, "--redo-existing", help="Redo existing instances", rich_help_panel="Data selection"),
     config_spec: Path = typer.Option( builtin_config_dir / "extra" / "swebench.yaml", "-c", "--config", help="Path to a config file", rich_help_panel="Basic"),
     environment_class: str | None = typer.Option( None, "--environment-class", help="Environment type to use. Recommended are docker or singularity", rich_help_panel="Advanced"),
+    wandb_project: str | None = typer.Option(None, "--wandb", help="Wandb project name to log throughput metrics", rich_help_panel="Advanced"),
 ) -> None:
     # fmt: on
     output_path = Path(output)
@@ -231,7 +291,25 @@ def main(
     if model_class is not None:
         config.setdefault("model", {})["model_class"] = model_class
 
-    progress_manager = RunBatchProgressManager(len(instances), output_path / f"exit_statuses_{time.time()}.yaml")
+    wandb_run = None
+    if wandb_project:
+        import wandb
+
+        wandb_run = wandb.init(
+            project=wandb_project,
+            config={
+                "subset": subset,
+                "split": split,
+                "workers": workers,
+                "model": config.get("model", {}).get("model_name", model),
+                "num_instances": len(instances),
+            },
+            name=f"{config.get('model', {}).get('model_name', model)}-{subset}-{split}",
+        )
+
+    progress_manager = RunBatchProgressManager(
+        len(instances), output_path / f"exit_statuses_{time.time()}.yaml", wandb_run=wandb_run,
+    )
 
     def process_futures(futures: dict[concurrent.futures.Future, str]):
         for future in concurrent.futures.as_completed(futures):
@@ -260,6 +338,9 @@ def main(
                     if not future.running() and not future.done():
                         future.cancel()
                 process_futures(futures)
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":

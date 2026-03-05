@@ -3,12 +3,15 @@ It's identical to the one used in swe-agent.
 """
 
 import collections
+import logging
 import time
 from datetime import timedelta
 from pathlib import Path
 from threading import Lock
 
 import yaml
+
+logger = logging.getLogger(__name__)
 from rich.console import Group
 from rich.progress import (
     BarColumn,
@@ -38,12 +41,14 @@ class RunBatchProgressManager:
         self,
         num_instances: int,
         yaml_report_path: Path | None = None,
+        wandb_run=None,
     ):
         """This class manages a progress bar/UI for run-batch
 
         Args:
             num_instances: Number of task instances
             yaml_report_path: Path to save a yaml report of the instances and their exit statuses
+            wandb_run: Optional wandb run object for logging metrics
         """
 
         self._spinner_tasks: dict[str, TaskID] = {}
@@ -52,6 +57,8 @@ class RunBatchProgressManager:
         self._lock = Lock()
         self._start_time = time.time()
         self._total_instances = num_instances
+        self._wandb_run = wandb_run
+        self._instance_metrics: list[dict] = []
 
         self._instances_by_exit_status = collections.defaultdict(list)
         self._main_progress_bar = Progress(
@@ -87,12 +94,12 @@ class RunBatchProgressManager:
         return sum(len(instances) for instances in self._instances_by_exit_status.values())
 
     def _get_eta_text(self) -> str:
-        """Calculate estimated time remaining based on current progress."""
+        """Calculate estimated time remaining and throughput based on current progress."""
         try:
-            estimated_remaining = (
-                (time.time() - self._start_time) / self.n_completed * (self._total_instances - self.n_completed)
-            )
-            return f"eta: {timedelta(seconds=int(estimated_remaining))}"
+            elapsed = time.time() - self._start_time
+            estimated_remaining = elapsed / self.n_completed * (self._total_instances - self.n_completed)
+            throughput = self.n_completed / elapsed * 3600
+            return f"eta: {timedelta(seconds=int(estimated_remaining))} | {throughput:.1f} tasks/hr"
         except ZeroDivisionError:
             return ""
 
@@ -142,8 +149,10 @@ class RunBatchProgressManager:
                 instance_id=instance_id,
             )
 
-    def on_instance_end(self, instance_id: str, exit_status: str | None) -> None:
+    def on_instance_end(self, instance_id: str, exit_status: str | None, instance_metrics: dict | None = None) -> None:
         self._instances_by_exit_status[exit_status].append(instance_id)
+        if instance_metrics is not None:
+            self._instance_metrics.append(instance_metrics)
         with self._lock:
             try:
                 self._task_progress_bar.remove_task(self._spinner_tasks[instance_id])
@@ -152,6 +161,7 @@ class RunBatchProgressManager:
             self._main_progress_bar.update(TaskID(0), advance=1, eta=self._get_eta_text())
         self.update_exit_status_table()
         self._update_total_costs()
+        self._log_wandb(instance_metrics)
         if self._yaml_report_path is not None:
             self._save_overview_data_yaml(self._yaml_report_path)
 
@@ -171,6 +181,53 @@ class RunBatchProgressManager:
             # convert defaultdict to dict because of serialization
             "instances_by_exit_status": dict(self._instances_by_exit_status),
         }
+
+    def _log_wandb(self, instance_metrics: dict | None = None) -> None:
+        """Log throughput, per-instance, and aggregate metrics to wandb."""
+        if self._wandb_run is None:
+            return
+        try:
+            elapsed = time.time() - self._start_time
+            completed = self.n_completed
+            throughput = completed / elapsed * 3600 if elapsed > 0 else 0
+
+            log_data = {
+                "completed": completed,
+                "elapsed_hours": elapsed / 3600,
+                "throughput_tasks_per_hr": throughput,
+                "total_cost": minisweagent.models.GLOBAL_MODEL_STATS.cost,
+                **{f"exit_status/{k}": len(v) for k, v in self._instances_by_exit_status.items()},
+            }
+
+            if instance_metrics:
+                for key in [
+                    "cost", "steps", "instance_duration_s", "env_setup_time_s",
+                    "input_tokens", "output_tokens", "total_tokens",
+                    "avg_response_latency_s", "avg_output_tps",
+                ]:
+                    if key in instance_metrics:
+                        log_data[f"instance/{key}"] = instance_metrics[key]
+
+                if instance_metrics.get("repo"):
+                    repo = instance_metrics["repo"]
+                    repo_instances = [m for m in self._instance_metrics if m.get("repo") == repo]
+                    log_data[f"repo/{repo}/completed"] = len(repo_instances)
+
+            if self._instance_metrics:
+                metrics = self._instance_metrics
+                for key in ["cost", "steps", "instance_duration_s", "env_setup_time_s",
+                            "input_tokens", "output_tokens", "avg_output_tps"]:
+                    values = [m[key] for m in metrics if key in m]
+                    if values:
+                        log_data[f"avg/{key}"] = sum(values) / len(values)
+                total_in = sum(m.get("input_tokens", 0) for m in metrics)
+                total_out = sum(m.get("output_tokens", 0) for m in metrics)
+                log_data["total_input_tokens"] = total_in
+                log_data["total_output_tokens"] = total_out
+
+            self._wandb_run.log(log_data)
+        except Exception as e:
+            logger.debug(f"Failed to log to wandb: {e}")
 
     def _save_overview_data_yaml(self, path: Path) -> None:
         """Save a yaml report of the instances and their exit statuses."""
