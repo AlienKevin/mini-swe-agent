@@ -155,6 +155,7 @@ def process_instance(
     exit_status = None
     result = None
     extra_info = {}
+    env = None
 
     try:
         env = get_sb_environment(config, instance)
@@ -173,6 +174,8 @@ def process_instance(
         exit_status, result = type(e).__name__, ""
         extra_info = {"traceback": traceback.format_exc(), "exception_str": str(e)}
     finally:
+        if env is not None and hasattr(env, "stop"):
+            env.stop()
         if agent is not None:
             traj_path = instance_dir / f"{instance_id}.traj.json"
             agent.save(
