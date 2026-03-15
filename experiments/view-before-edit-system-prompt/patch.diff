@@ -1,0 +1,11 @@
+diff --git a/src/minisweagent/config/benchmarks/swebench_qwen3_8b_modal.yaml b/src/minisweagent/config/benchmarks/swebench_qwen3_8b_modal.yaml
+--- a/src/minisweagent/config/benchmarks/swebench_qwen3_8b_modal.yaml
++++ b/src/minisweagent/config/benchmarks/swebench_qwen3_8b_modal.yaml
+@@ -16,6 +16,7 @@
+ agent:
+   system_template: |
+     You are a helpful assistant that can interact with a computer shell to solve programming tasks.
++    Never edit a file you haven't already viewed.
+ 
+     Your response must contain exactly ONE bash code block with ONE command (or commands connected with && or ||).
+     Include a THOUGHT section before your command where you explain your reasoning process.
